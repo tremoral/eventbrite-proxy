@@ -59,14 +59,23 @@ app.get('/api/events', async (req, res) => {
         Authorization: `Bearer ${process.env.EVENTBRITE_TOKEN}`
       },
       params: {
-        'start_date.range_start': startDate,
-        'start_date.range_end': endDate,
-        'status': 'live',
-        'order_by': 'start_asc'
+        'time_filter': 'current_future',
+        'order_by': 'start_asc',
+        'expand': 'venue'
       }
     });
 
-    res.json(response.data.events || []);
+    // Filtrar eventos por mes y año localmente
+    const allEvents = response.data.events || [];
+    const filteredEvents = allEvents.filter(event => {
+      if (!event.start || !event.start.utc) return false;
+      const eventDate = new Date(event.start.utc);
+      return eventDate.getFullYear() === yearNum && 
+             eventDate.getMonth() === monthNum - 1;
+    });
+
+    console.log(`Eventos encontrados: ${filteredEvents.length} de ${allEvents.length} totales`);
+    res.json(filteredEvents);
   } catch (error) {
     console.error('Error al obtener eventos:', error.message);
     
@@ -87,6 +96,17 @@ app.get('/api/events', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en http://localhost:${PORT}`);
+// Escuchar en 0.0.0.0 para Railway
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Servidor corriendo en puerto ${PORT}`);
+  console.log(`Variables de entorno: TOKEN=${process.env.EVENTBRITE_TOKEN ? '✓' : '✗'}`);
+});
+
+// Manejar señales de cierre correctamente
+process.on('SIGTERM', () => {
+  console.log('SIGTERM recibido, cerrando servidor gracefully...');
+  server.close(() => {
+    console.log('Servidor cerrado');
+    process.exit(0);
+  });
 });
