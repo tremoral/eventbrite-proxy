@@ -21,7 +21,7 @@ app.get('/api/events', async (req, res) => {
 
     const response = await axios.get('https://www.eventbriteapi.com/v3/events/search/', {
       headers: {
-        Authorization: `Bearer ${EVENTBRITE_TOKEN}`
+        Authorization: `Bearer ${process.env.EVENTBRITE_TOKEN}`
       },
       params: {
         'start_date.range_start': startDate,
