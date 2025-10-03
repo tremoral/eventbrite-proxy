@@ -19,7 +19,10 @@ app.get('/api/events', async (req, res) => {
     const startDate = `${year}-${month}-01T00:00:00Z`;
     const endDate = `${year}-${month}-31T23:59:59Z`;
 
-    const response = await axios.get('https://www.eventbriteapi.com/v3/users/me/events/', {
+    
+    const organizerId = '1767744253649';
+
+    const response = await axios.get(`https://www.eventbriteapi.com/v3/organizers/${organizerId}/events/`, {
       headers: {
         Authorization: `Bearer ${EVENTBRITE_TOKEN}`
       },
