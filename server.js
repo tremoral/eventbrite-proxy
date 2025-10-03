@@ -23,14 +23,15 @@ app.get('/api/events', async (req, res) => {
     
     const organizerId = '1767744253649';
 
-const response = await axios.get(`https://www.eventbriteapi.com/v3/organizers/${organizerId}/events/`, {
+const response = await axios.get('https://www.eventbriteapi.com/v3/events/search/', {
   headers: {
     Authorization: `Bearer ${EVENTBRITE_TOKEN}`
   },
   params: {
     'start_date.range_start': startDate,
     'start_date.range_end': endDate,
-    'status': 'live'
+    'status': 'live',
+    'organizer.id': '1767744253649' // opcional si quieres filtrar por organizador
   }
 });
 
