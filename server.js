@@ -17,7 +17,8 @@ app.get('/api/events', async (req, res) => {
 
     // Construye las fechas de inicio y fin del mes
     const startDate = `${year}-${month}-01T00:00:00Z`;
-    const endDate = `${year}-${month}-31T23:59:59Z`;
+    const lastDay = new Date(year, month, 0).getDate(); // mes es 1-based
+    const endDate = `${year}-${month}-${lastDay}T23:59:59Z`;
 
     
     const organizerId = '1767744253649';
