@@ -3,8 +3,17 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Health check para Railway
 app.get('/', (req, res) => {
-  res.send('Eventbrite Proxy funcionando 🚀');
+  res.json({ 
+    status: 'ok', 
+    message: 'Eventbrite Proxy funcionando 🚀',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
 app.get('/api/events', async (req, res) => {
@@ -36,14 +45,24 @@ app.get('/api/events', async (req, res) => {
     const lastDayPadded = lastDay.toString().padStart(2, '0');
     const endDate = `${yearNum}-${monthPadded}-${lastDayPadded}T23:59:59Z`;
 
-    const response = await axios.get('https://www.eventbriteapi.com/v3/events/search/', {
+    console.log(`Consultando eventos: ${startDate} a ${endDate}`);
+    
+    // Verificar que el token existe
+    if (!process.env.EVENTBRITE_TOKEN) {
+      throw new Error('EVENTBRITE_TOKEN no está configurado');
+    }
+
+    const ORGANIZATION_ID = '2877190433721';
+
+    const response = await axios.get(`https://www.eventbriteapi.com/v3/organizations/${ORGANIZATION_ID}/events/`, {
       headers: {
         Authorization: `Bearer ${process.env.EVENTBRITE_TOKEN}`
       },
       params: {
         'start_date.range_start': startDate,
         'start_date.range_end': endDate,
-        'status': 'live'
+        'status': 'live',
+        'order_by': 'start_asc'
       }
     });
 
