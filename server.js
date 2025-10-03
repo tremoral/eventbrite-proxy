@@ -23,16 +23,17 @@ app.get('/api/events', async (req, res) => {
     
     const organizerId = '1767744253649';
 
-    const response = await axios.get(`https://www.eventbriteapi.com/v3/organizers/${organizerId}/events/`, {
-      headers: {
-        Authorization: `Bearer ${EVENTBRITE_TOKEN}`
-      },
-      params: {
-        'start_date.range_start': startDate,
-        'start_date.range_end': endDate,
-        'status': 'live'
-      }
-    });
+const response = await axios.get(`https://www.eventbriteapi.com/v3/organizers/${organizerId}/events/`, {
+  headers: {
+    Authorization: `Bearer ${EVENTBRITE_TOKEN}`
+  },
+  params: {
+    'start_date.range_start': startDate,
+    'start_date.range_end': endDate,
+    'status': 'live'
+  }
+});
+
 
     res.json(response.data.events);
   } catch (error) {
