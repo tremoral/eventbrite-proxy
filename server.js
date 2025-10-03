@@ -1,19 +1,19 @@
-// server.js
-require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const cors = require('cors');
-
 const app = express();
-app.use(cors());
-
 const PORT = process.env.PORT || 5000;
-const EVENTBRITE_TOKEN = process.env.EVENTBRITE_TOKEN;
 
-// Ruta para obtener eventos del mes
+app.get('/', (req, res) => {
+  res.send('Eventbrite Proxy funcionando 🚀');
+});
+
 app.get('/api/events', async (req, res) => {
   try {
     const { month, year } = req.query;
+
+    if (!month || !year) {
+      return res.status(400).json({ error: 'Faltan parámetros month y year' });
+    }
 
     const startDate = `${year}-${month}-01T00:00:00Z`;
     const lastDay = new Date(year, month, 0).getDate();
