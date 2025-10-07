@@ -1,7 +1,25 @@
 const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// ✅ Configurar CORS para permitir peticiones desde tu sitio
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:3000',
+    'https://playroompv.com',
+    'https://www.playroompv.com'
+  ],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  credentials: true,
+  optionsSuccessStatus: 200
+}));
+
+// Middleware para parsear JSON
+app.use(express.json());
 
 // Health check para Railway
 app.get('/', (req, res) => {
