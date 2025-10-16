@@ -73,29 +73,49 @@ app.post('/api/clear-cache', (req, res) => {
 
 // ⭐ Función helper para reintentar peticiones con backoff exponencial
 async function fetchWithRetry(url, config, retries = 3, delay = 1000) {
+  let lastError;
+  
   for (let i = 0; i < retries; i++) {
     try {
+      console.log(`🔄 Intento ${i + 1}/${retries} - GET ${url}`);
+      
       const response = await axios.get(url, {
         ...config,
-        timeout: 15000 // 15 segundos timeout (aumentado)
+        timeout: 20000 // 20 segundos timeout
       });
-      return response;
-    } catch (error) {
-      const isLastAttempt = i === retries - 1;
-      const is502or503 = error.response && [502, 503, 504].includes(error.response.status);
-      const isTimeout = error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT';
       
-      // Si es el último intento o no es un error temporal, lanzar error
-      if (isLastAttempt || (!is502or503 && !isTimeout)) {
+      console.log(`✅ Respuesta exitosa en intento ${i + 1}`);
+      return response;
+      
+    } catch (error) {
+      lastError = error;
+      const isLastAttempt = i === retries - 1;
+      
+      // Identificar tipo de error
+      const status = error.response?.status;
+      const isServerError = status && [502, 503, 504].includes(status);
+      const isTimeout = error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT';
+      const shouldRetry = isServerError || isTimeout;
+      
+      console.log(`❌ Intento ${i + 1} falló: ${error.message} (status: ${status || 'N/A'})`);
+      
+      // Si no es el último intento Y es un error que merece reintento
+      if (!isLastAttempt && shouldRetry) {
+        const waitTime = delay * Math.pow(2, i); // 1s, 2s, 4s
+        console.log(`⏳ Esperando ${waitTime}ms antes del próximo intento...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      } else if (isLastAttempt) {
+        console.log(`💥 Todos los intentos fallaron`);
+        throw lastError;
+      } else {
+        // Error que no merece reintento (401, 404, etc)
+        console.log(`🚫 Error no recuperable, no se reintentará`);
         throw error;
       }
-      
-      // Backoff exponencial: 1s → 2s → 4s
-      const waitTime = delay * Math.pow(2, i);
-      console.log(`⏳ Reintento ${i + 1}/${retries} después de ${waitTime}ms (${error.message})`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
     }
   }
+  
+  throw lastError;
 }
 
 app.get('/api/events', async (req, res) => {
@@ -149,20 +169,24 @@ app.get('/api/events', async (req, res) => {
     }
 
     const ORGANIZATION_ID = '2877190433721';
+    const apiUrl = `https://www.eventbriteapi.com/v3/organizations/${ORGANIZATION_ID}/events/`;
 
     // ⭐ Usar fetchWithRetry con 3 intentos
     const response = await fetchWithRetry(
-      `https://www.eventbriteapi.com/v3/organizations/${ORGANIZATION_ID}/events/`,
+      apiUrl,
       {
         headers: {
-          Authorization: `Bearer ${process.env.EVENTBRITE_TOKEN}`
+          'Authorization': `Bearer ${process.env.EVENTBRITE_TOKEN}`,
+          'Content-Type': 'application/json'
         },
         params: {
           'time_filter': 'current_future',
           'order_by': 'start_asc',
           'expand': 'venue'
         }
-      }
+      },
+      3,  // 3 reintentos
+      1000  // 1 segundo de delay inicial
     );
 
     // Filtrar eventos por mes y año localmente
@@ -229,7 +253,7 @@ app.get('/api/events', async (req, res) => {
     if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
       return res.status(504).json({
         error: 'Timeout',
-        message: 'La API de Eventbrite no respondió a tiempo después de 3 intentos (15s cada uno). Intenta de nuevo.'
+        message: 'La API de Eventbrite no respondió a tiempo después de 3 intentos (20s cada uno). Intenta de nuevo.'
       });
     }
     
