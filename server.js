@@ -4,7 +4,7 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// ✅ Configurar CORS para permitir peticiones desde tu sitio
+// ✅ Configurar CORS
 app.use(cors({
   origin: [
     'http://localhost:5173',
@@ -18,10 +18,9 @@ app.use(cors({
   optionsSuccessStatus: 200
 }));
 
-// Middleware para parsear JSON
 app.use(express.json());
 
-// Health check para Railway
+// Health check
 app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -33,6 +32,31 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
+
+// ⭐ Función helper para reintentar peticiones
+async function fetchWithRetry(url, config, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await axios.get(url, {
+        ...config,
+        timeout: 10000 // 10 segundos timeout
+      });
+      return response;
+    } catch (error) {
+      const isLastAttempt = i === retries - 1;
+      const is502or503 = error.response && [502, 503].includes(error.response.status);
+      
+      // Si es el último intento o no es un error temporal, lanzar error
+      if (isLastAttempt || !is502or503) {
+        throw error;
+      }
+      
+      // Esperar antes de reintentar (con backoff exponencial)
+      console.log(`Reintento ${i + 1}/${retries} después de ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
+    }
+  }
+}
 
 app.get('/api/events', async (req, res) => {
   try {
@@ -58,12 +82,11 @@ app.get('/api/events', async (req, res) => {
     const monthPadded = monthNum.toString().padStart(2, '0');
     const startDate = `${yearNum}-${monthPadded}-01T00:00:00Z`;
     
-    // Calcular último día del mes correctamente
     const lastDay = new Date(yearNum, monthNum, 0).getDate();
     const lastDayPadded = lastDay.toString().padStart(2, '0');
     const endDate = `${yearNum}-${monthPadded}-${lastDayPadded}T23:59:59Z`;
 
-    console.log(`Consultando eventos: ${startDate} a ${endDate}`);
+    console.log(`📅 Consultando eventos: ${startDate} a ${endDate}`);
     
     // Verificar que el token existe
     if (!process.env.EVENTBRITE_TOKEN) {
@@ -72,16 +95,20 @@ app.get('/api/events', async (req, res) => {
 
     const ORGANIZATION_ID = '2877190433721';
 
-    const response = await axios.get(`https://www.eventbriteapi.com/v3/organizations/${ORGANIZATION_ID}/events/`, {
-      headers: {
-        Authorization: `Bearer ${process.env.EVENTBRITE_TOKEN}`
-      },
-      params: {
-        'time_filter': 'current_future',
-        'order_by': 'start_asc',
-        'expand': 'venue'
+    // ⭐ Usar fetchWithRetry en lugar de axios directo
+    const response = await fetchWithRetry(
+      `https://www.eventbriteapi.com/v3/organizations/${ORGANIZATION_ID}/events/`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.EVENTBRITE_TOKEN}`
+        },
+        params: {
+          'time_filter': 'current_future',
+          'order_by': 'start_asc',
+          'expand': 'venue'
+        }
       }
-    });
+    );
 
     // Filtrar eventos por mes y año localmente
     const allEvents = response.data.events || [];
@@ -92,21 +119,54 @@ app.get('/api/events', async (req, res) => {
              eventDate.getMonth() === monthNum - 1;
     });
 
-    console.log(`Eventos encontrados: ${filteredEvents.length} de ${allEvents.length} totales`);
+    console.log(`✅ Eventos encontrados: ${filteredEvents.length} de ${allEvents.length} totales`);
     res.json(filteredEvents);
+
   } catch (error) {
-    console.error('Error al obtener eventos:', error.message);
+    console.error('❌ Error al obtener eventos:', error.message);
     
-    // Manejo seguro de errores
+    // Manejo detallado de errores
     if (error.response) {
-      // Error de respuesta de la API de Eventbrite
-      return res.status(error.response.status || 500).json({
-        error: 'Error al consultar la API de Eventbrite',
-        message: error.response.data?.error_description || error.response.data?.error || 'Error desconocido'
+      const status = error.response.status;
+      
+      if (status === 401) {
+        return res.status(401).json({
+          error: 'Token de autorización inválido o expirado',
+          message: 'Verifica tu EVENTBRITE_TOKEN'
+        });
+      }
+      
+      if (status === 429) {
+        return res.status(429).json({
+          error: 'Límite de peticiones excedido',
+          message: 'Eventbrite está limitando las peticiones. Espera unos minutos.',
+          retryAfter: error.response.headers['retry-after'] || '60 segundos'
+        });
+      }
+      
+      if (status === 502 || status === 503) {
+        return res.status(503).json({
+          error: 'Servicio de Eventbrite temporalmente no disponible',
+          message: 'La API de Eventbrite no está respondiendo. Intenta de nuevo en unos momentos.',
+          status: status
+        });
+      }
+      
+      return res.status(status).json({
+        error: 'Error de la API de Eventbrite',
+        message: error.response.data?.error_description || 'Error desconocido',
+        status: status
       });
     }
     
     // Error de red o timeout
+    if (error.code === 'ECONNABORTED') {
+      return res.status(504).json({
+        error: 'Timeout',
+        message: 'La petición tardó demasiado tiempo. Intenta de nuevo.'
+      });
+    }
+    
     res.status(500).json({
       error: 'No se pudieron obtener los eventos',
       message: 'Error de conexión con Eventbrite'
@@ -116,15 +176,15 @@ app.get('/api/events', async (req, res) => {
 
 // Escuchar en 0.0.0.0 para Railway
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
-  console.log(`Variables de entorno: TOKEN=${process.env.EVENTBRITE_TOKEN ? '✓' : '✗'}`);
+  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+  console.log(`🔑 Variables de entorno: TOKEN=${process.env.EVENTBRITE_TOKEN ? '✓' : '✗'}`);
 });
 
 // Manejar señales de cierre correctamente
 process.on('SIGTERM', () => {
-  console.log('SIGTERM recibido, cerrando servidor gracefully...');
+  console.log('⚠️  SIGTERM recibido, cerrando servidor gracefully...');
   server.close(() => {
-    console.log('Servidor cerrado');
+    console.log('✅ Servidor cerrado');
     process.exit(0);
   });
 });
