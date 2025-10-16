@@ -4,6 +4,10 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// ✅ Sistema de caché en memoria
+const cache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
 // ✅ Configurar CORS
 app.use(cors({
   origin: [
@@ -20,40 +24,76 @@ app.use(cors({
 
 app.use(express.json());
 
-// Health check
+// ⭐ Función para limpiar caché expirado automáticamente
+function cleanExpiredCache() {
+  const now = Date.now();
+  for (const [key, value] of cache.entries()) {
+    if (now > value.expiry) {
+      cache.delete(key);
+      console.log(`🗑️  Caché expirado eliminado: ${key}`);
+    }
+  }
+}
+
+// Limpiar caché cada 10 minutos
+setInterval(cleanExpiredCache, 10 * 60 * 1000);
+
+// Health check con información de caché
 app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
     message: 'Eventbrite Proxy funcionando 🚀',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    cache: {
+      entries: cache.size,
+      keys: Array.from(cache.keys()),
+      ttl_seconds: CACHE_TTL / 1000
+    }
   });
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ 
+    status: 'ok',
+    uptime: process.uptime(),
+    cache_size: cache.size
+  });
 });
 
-// ⭐ Función helper para reintentar peticiones
+// ⭐ Endpoint para limpiar caché manualmente
+app.post('/api/clear-cache', (req, res) => {
+  const size = cache.size;
+  cache.clear();
+  console.log(`🗑️  Caché limpiado manualmente (${size} entradas)`);
+  res.json({ 
+    message: 'Caché limpiado exitosamente',
+    cleared: size
+  });
+});
+
+// ⭐ Función helper para reintentar peticiones con backoff exponencial
 async function fetchWithRetry(url, config, retries = 3, delay = 1000) {
   for (let i = 0; i < retries; i++) {
     try {
       const response = await axios.get(url, {
         ...config,
-        timeout: 10000 // 10 segundos timeout
+        timeout: 15000 // 15 segundos timeout (aumentado)
       });
       return response;
     } catch (error) {
       const isLastAttempt = i === retries - 1;
-      const is502or503 = error.response && [502, 503].includes(error.response.status);
+      const is502or503 = error.response && [502, 503, 504].includes(error.response.status);
+      const isTimeout = error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT';
       
       // Si es el último intento o no es un error temporal, lanzar error
-      if (isLastAttempt || !is502or503) {
+      if (isLastAttempt || (!is502or503 && !isTimeout)) {
         throw error;
       }
       
-      // Esperar antes de reintentar (con backoff exponencial)
-      console.log(`Reintento ${i + 1}/${retries} después de ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
+      // Backoff exponencial: 1s → 2s → 4s
+      const waitTime = delay * Math.pow(2, i);
+      console.log(`⏳ Reintento ${i + 1}/${retries} después de ${waitTime}ms (${error.message})`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
     }
   }
 }
@@ -78,6 +118,21 @@ app.get('/api/events', async (req, res) => {
       return res.status(400).json({ error: 'El año debe ser un número válido' });
     }
 
+    // ⭐ Crear clave de caché única por mes/año
+    const cacheKey = `events_${yearNum}_${monthNum}`;
+    
+    // ⭐ Verificar si existe en caché y no ha expirado
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() < cached.expiry) {
+      const expiresIn = Math.round((cached.expiry - Date.now()) / 1000);
+      console.log(`✨ Respuesta desde caché: ${cacheKey} (expira en ${expiresIn}s)`);
+      
+      // Agregar header para indicar que viene del caché
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('X-Cache-Expires-In', expiresIn.toString());
+      return res.json(cached.data);
+    }
+
     // Formatear fechas con padding de ceros
     const monthPadded = monthNum.toString().padStart(2, '0');
     const startDate = `${yearNum}-${monthPadded}-01T00:00:00Z`;
@@ -86,7 +141,7 @@ app.get('/api/events', async (req, res) => {
     const lastDayPadded = lastDay.toString().padStart(2, '0');
     const endDate = `${yearNum}-${monthPadded}-${lastDayPadded}T23:59:59Z`;
 
-    console.log(`📅 Consultando eventos: ${startDate} a ${endDate}`);
+    console.log(`📅 Consultando API Eventbrite: ${startDate} a ${endDate}`);
     
     // Verificar que el token existe
     if (!process.env.EVENTBRITE_TOKEN) {
@@ -95,7 +150,7 @@ app.get('/api/events', async (req, res) => {
 
     const ORGANIZATION_ID = '2877190433721';
 
-    // ⭐ Usar fetchWithRetry en lugar de axios directo
+    // ⭐ Usar fetchWithRetry con 3 intentos
     const response = await fetchWithRetry(
       `https://www.eventbriteapi.com/v3/organizations/${ORGANIZATION_ID}/events/`,
       {
@@ -120,6 +175,17 @@ app.get('/api/events', async (req, res) => {
     });
 
     console.log(`✅ Eventos encontrados: ${filteredEvents.length} de ${allEvents.length} totales`);
+    
+    // ⭐ Guardar en caché
+    cache.set(cacheKey, {
+      data: filteredEvents,
+      expiry: Date.now() + CACHE_TTL,
+      timestamp: new Date().toISOString()
+    });
+    console.log(`💾 Guardado en caché: ${cacheKey} (TTL: ${CACHE_TTL / 1000}s)`);
+
+    // Agregar headers para indicar que es respuesta fresca
+    res.setHeader('X-Cache', 'MISS');
     res.json(filteredEvents);
 
   } catch (error) {
@@ -144,32 +210,33 @@ app.get('/api/events', async (req, res) => {
         });
       }
       
-      if (status === 502 || status === 503) {
+      if (status === 502 || status === 503 || status === 504) {
         return res.status(503).json({
           error: 'Servicio de Eventbrite temporalmente no disponible',
-          message: 'La API de Eventbrite no está respondiendo. Intenta de nuevo en unos momentos.',
+          message: 'La API de Eventbrite no está respondiendo después de 3 intentos. Intenta de nuevo en unos momentos.',
           status: status
         });
       }
       
       return res.status(status).json({
         error: 'Error de la API de Eventbrite',
-        message: error.response.data?.error_description || 'Error desconocido',
+        message: error.response.data?.error_description || error.response.data?.error || 'Error desconocido',
         status: status
       });
     }
     
     // Error de red o timeout
-    if (error.code === 'ECONNABORTED') {
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
       return res.status(504).json({
         error: 'Timeout',
-        message: 'La petición tardó demasiado tiempo. Intenta de nuevo.'
+        message: 'La API de Eventbrite no respondió a tiempo después de 3 intentos (15s cada uno). Intenta de nuevo.'
       });
     }
     
     res.status(500).json({
       error: 'No se pudieron obtener los eventos',
-      message: 'Error de conexión con Eventbrite'
+      message: 'Error de conexión con Eventbrite',
+      details: error.message
     });
   }
 });
@@ -178,6 +245,7 @@ app.get('/api/events', async (req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
   console.log(`🔑 Variables de entorno: TOKEN=${process.env.EVENTBRITE_TOKEN ? '✓' : '✗'}`);
+  console.log(`💾 Sistema de caché activado (TTL: ${CACHE_TTL / 1000}s)`);
 });
 
 // Manejar señales de cierre correctamente
@@ -187,4 +255,14 @@ process.on('SIGTERM', () => {
     console.log('✅ Servidor cerrado');
     process.exit(0);
   });
+});
+
+// Manejar errores no capturados
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  process.exit(1);
 });
