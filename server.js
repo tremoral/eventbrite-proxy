@@ -121,6 +121,8 @@ async function fetchWithRetry(url, config, retries = 3, delay = 1000) {
 // ⭐ Función para obtener información de tickets de un evento
 async function getEventTicketInfo(eventId, headers) {
   try {
+    console.log(`🎫 Obteniendo tickets para evento ${eventId}...`);
+    
     const response = await fetchWithRetry(
       `https://www.eventbriteapi.com/v3/events/${eventId}/ticket_classes/`,
       { headers },
@@ -130,7 +132,15 @@ async function getEventTicketInfo(eventId, headers) {
 
     const ticketClasses = response.data.ticket_classes || [];
     
+    console.log(`📊 Evento ${eventId}: ${ticketClasses.length} clases de tickets encontradas`);
+    
+    // Debug: mostrar información de cada ticket
+    ticketClasses.forEach((ticket, index) => {
+      console.log(`  Ticket ${index + 1}: ${ticket.name} - Precio: ${ticket.cost?.display || ticket.cost?.value || 'N/A'} ${ticket.currency} - Estado: ${ticket.on_sale_status} - Gratis: ${ticket.free} - Oculto: ${ticket.hidden}`);
+    });
+    
     if (ticketClasses.length === 0) {
+      console.log(`⚠️  Evento ${eventId}: Sin tickets configurados`);
       return {
         base_price: 0,
         currency: 'MXN',
@@ -140,30 +150,72 @@ async function getEventTicketInfo(eventId, headers) {
       };
     }
 
-    // Encontrar el ticket más barato que esté disponible
-    const availableTickets = ticketClasses.filter(ticket => 
-      !ticket.hidden && ticket.on_sale_status === 'AVAILABLE'
-    );
+    // Filtrar tickets que no estén ocultos
+    const visibleTickets = ticketClasses.filter(ticket => !ticket.hidden);
+    console.log(`👁️  Evento ${eventId}: ${visibleTickets.length} tickets visibles`);
 
-    if (availableTickets.length === 0) {
+    // Si no hay tickets visibles, usar todos
+    const ticketsToAnalyze = visibleTickets.length > 0 ? visibleTickets : ticketClasses;
+
+    // Encontrar tickets disponibles para la venta
+    const availableTickets = ticketsToAnalyze.filter(ticket => 
+      ticket.on_sale_status === 'AVAILABLE' || ticket.on_sale_status === 'SALE_SCHEDULED'
+    );
+    
+    console.log(`✅ Evento ${eventId}: ${availableTickets.length} tickets disponibles para venta`);
+
+    // Si no hay tickets disponibles, analizar todos los tickets visibles
+    const ticketsForPrice = availableTickets.length > 0 ? availableTickets : ticketsToAnalyze;
+
+    if (ticketsForPrice.length === 0) {
+      console.log(`❌ Evento ${eventId}: No hay tickets para analizar`);
       return {
         base_price: 0,
         currency: ticketClasses[0]?.currency || 'MXN',
         available_tickets: 0,
         total_tickets: ticketClasses.reduce((sum, ticket) => sum + (ticket.quantity_total || 0), 0),
-        is_free: ticketClasses.every(ticket => ticket.free === true)
+        is_free: true
       };
     }
 
-    // Ordenar por precio (menor a mayor)
-    availableTickets.sort((a, b) => {
-      const priceA = parseFloat(a.cost?.display || a.cost?.value || 0);
-      const priceB = parseFloat(b.cost?.display || b.cost?.value || 0);
+    // Ordenar por precio (menor a mayor) - mejorar la lógica de precio
+    ticketsForPrice.sort((a, b) => {
+      // Primero intentar con cost.display, luego cost.value
+      const getPriceValue = (ticket) => {
+        if (ticket.cost?.display) {
+          return parseFloat(ticket.cost.display.replace(/[^\d.-]/g, ''));
+        }
+        if (ticket.cost?.value) {
+          return parseFloat(ticket.cost.value);
+        }
+        return ticket.free ? 0 : Infinity;
+      };
+
+      const priceA = getPriceValue(a);
+      const priceB = getPriceValue(b);
       return priceA - priceB;
     });
 
-    const cheapestTicket = availableTickets[0];
-    const basePrice = parseFloat(cheapestTicket.cost?.display || cheapestTicket.cost?.value || 0) / 100; // Convertir de centavos a pesos
+    const cheapestTicket = ticketsForPrice[0];
+    console.log(`💰 Ticket más barato: ${cheapestTicket.name} - ${JSON.stringify(cheapestTicket.cost)}`);
+
+    // Mejorar la extracción del precio
+    let basePrice = 0;
+    
+    if (cheapestTicket.free === true) {
+      basePrice = 0;
+    } else if (cheapestTicket.cost?.display) {
+      // Extraer número de display (ej: "$162.17 MXN" -> 162.17)
+      const displayMatch = cheapestTicket.cost.display.match(/[\d,]+\.?\d*/);
+      if (displayMatch) {
+        basePrice = parseFloat(displayMatch[0].replace(',', ''));
+      }
+    } else if (cheapestTicket.cost?.value) {
+      // cost.value está en centavos, convertir a pesos
+      basePrice = parseFloat(cheapestTicket.cost.value) / 100;
+    }
+
+    console.log(`💵 Precio final calculado: ${basePrice} ${cheapestTicket.currency}`);
     
     // Calcular tickets disponibles totales
     const totalAvailable = availableTickets.reduce((sum, ticket) => {
@@ -172,18 +224,28 @@ async function getEventTicketInfo(eventId, headers) {
       return sum + Math.max(0, total - sold);
     }, 0);
 
+    // Si no hay tickets "disponibles", calcular de todos los tickets
+    const finalAvailable = totalAvailable > 0 ? totalAvailable : ticketClasses.reduce((sum, ticket) => {
+      const sold = ticket.quantity_sold || 0;
+      const total = ticket.quantity_total || 0;
+      return sum + Math.max(0, total - sold);
+    }, 0);
+
     const totalTickets = ticketClasses.reduce((sum, ticket) => sum + (ticket.quantity_total || 0), 0);
 
-    return {
+    const result = {
       base_price: basePrice,
       currency: cheapestTicket.currency || 'MXN',
-      available_tickets: totalAvailable,
+      available_tickets: finalAvailable,
       total_tickets: totalTickets,
-      is_free: cheapestTicket.free === true || basePrice === 0
+      is_free: basePrice === 0 || cheapestTicket.free === true
     };
 
+    console.log(`🎯 Resultado final para evento ${eventId}:`, result);
+    return result;
+
   } catch (error) {
-    console.warn(`⚠️  No se pudo obtener info de tickets para evento ${eventId}:`, error.message);
+    console.warn(`⚠️  Error obteniendo info de tickets para evento ${eventId}:`, error.message);
     return {
       base_price: null,
       currency: 'MXN',
