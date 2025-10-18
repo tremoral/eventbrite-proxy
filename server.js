@@ -118,6 +118,83 @@ async function fetchWithRetry(url, config, retries = 3, delay = 1000) {
   throw lastError;
 }
 
+// ⭐ Función para obtener información de tickets de un evento
+async function getEventTicketInfo(eventId, headers) {
+  try {
+    const response = await fetchWithRetry(
+      `https://www.eventbriteapi.com/v3/events/${eventId}/ticket_classes/`,
+      { headers },
+      2, // Solo 2 reintentos para tickets (para ser más rápido)
+      500 // Delay más corto
+    );
+
+    const ticketClasses = response.data.ticket_classes || [];
+    
+    if (ticketClasses.length === 0) {
+      return {
+        base_price: 0,
+        currency: 'MXN',
+        available_tickets: 0,
+        total_tickets: 0,
+        is_free: true
+      };
+    }
+
+    // Encontrar el ticket más barato que esté disponible
+    const availableTickets = ticketClasses.filter(ticket => 
+      !ticket.hidden && ticket.on_sale_status === 'AVAILABLE'
+    );
+
+    if (availableTickets.length === 0) {
+      return {
+        base_price: 0,
+        currency: ticketClasses[0]?.currency || 'MXN',
+        available_tickets: 0,
+        total_tickets: ticketClasses.reduce((sum, ticket) => sum + (ticket.quantity_total || 0), 0),
+        is_free: ticketClasses.every(ticket => ticket.free === true)
+      };
+    }
+
+    // Ordenar por precio (menor a mayor)
+    availableTickets.sort((a, b) => {
+      const priceA = parseFloat(a.cost?.display || a.cost?.value || 0);
+      const priceB = parseFloat(b.cost?.display || b.cost?.value || 0);
+      return priceA - priceB;
+    });
+
+    const cheapestTicket = availableTickets[0];
+    const basePrice = parseFloat(cheapestTicket.cost?.display || cheapestTicket.cost?.value || 0) / 100; // Convertir de centavos a pesos
+    
+    // Calcular tickets disponibles totales
+    const totalAvailable = availableTickets.reduce((sum, ticket) => {
+      const sold = ticket.quantity_sold || 0;
+      const total = ticket.quantity_total || 0;
+      return sum + Math.max(0, total - sold);
+    }, 0);
+
+    const totalTickets = ticketClasses.reduce((sum, ticket) => sum + (ticket.quantity_total || 0), 0);
+
+    return {
+      base_price: basePrice,
+      currency: cheapestTicket.currency || 'MXN',
+      available_tickets: totalAvailable,
+      total_tickets: totalTickets,
+      is_free: cheapestTicket.free === true || basePrice === 0
+    };
+
+  } catch (error) {
+    console.warn(`⚠️  No se pudo obtener info de tickets para evento ${eventId}:`, error.message);
+    return {
+      base_price: null,
+      currency: 'MXN',
+      available_tickets: null,
+      total_tickets: null,
+      is_free: null,
+      error: 'No disponible'
+    };
+  }
+}
+
 app.get('/api/events', async (req, res) => {
   try {
     const { month, year } = req.query;
@@ -170,15 +247,17 @@ app.get('/api/events', async (req, res) => {
 
     const ORGANIZATION_ID = '2877190433721';
     const apiUrl = `https://www.eventbriteapi.com/v3/organizations/${ORGANIZATION_ID}/events/`;
+    
+    const headers = {
+      'Authorization': `Bearer ${process.env.EVENTBRITE_TOKEN}`,
+      'Content-Type': 'application/json'
+    };
 
     // ⭐ Usar fetchWithRetry con 3 intentos
     const response = await fetchWithRetry(
       apiUrl,
       {
-        headers: {
-          'Authorization': `Bearer ${process.env.EVENTBRITE_TOKEN}`,
-          'Content-Type': 'application/json'
-        },
+        headers,
         params: {
           'time_filter': 'current_future',
           'order_by': 'start_asc',
@@ -200,9 +279,25 @@ app.get('/api/events', async (req, res) => {
 
     console.log(`✅ Eventos encontrados: ${filteredEvents.length} de ${allEvents.length} totales`);
     
+    // ⭐ Obtener información de tickets para cada evento
+    console.log(`🎫 Obteniendo información de tickets para ${filteredEvents.length} eventos...`);
+    
+    const eventsWithTickets = await Promise.all(
+      filteredEvents.map(async (event) => {
+        const ticketInfo = await getEventTicketInfo(event.id, headers);
+        
+        return {
+          ...event,
+          ticket_info: ticketInfo
+        };
+      })
+    );
+
+    console.log(`💰 Información de tickets agregada a todos los eventos`);
+    
     // ⭐ Guardar en caché
     cache.set(cacheKey, {
-      data: filteredEvents,
+      data: eventsWithTickets,
       expiry: Date.now() + CACHE_TTL,
       timestamp: new Date().toISOString()
     });
@@ -210,7 +305,7 @@ app.get('/api/events', async (req, res) => {
 
     // Agregar headers para indicar que es respuesta fresca
     res.setHeader('X-Cache', 'MISS');
-    res.json(filteredEvents);
+    res.json(eventsWithTickets);
 
   } catch (error) {
     console.error('❌ Error al obtener eventos:', error.message);
