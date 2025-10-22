@@ -357,25 +357,17 @@ app.get('/api/events', async (req, res) => {
                  eventDate.getMonth() === monthNum - 1;
         });
     
-        // ⭐ Filtrar eventos privados (excluir)
+        // ⭐ Filtrar solo eventos listados (excluir listed: false)
         const filteredEvents = eventsByMonth.filter(event => {
-          // Un evento es público si:
-          // - listed === true (aparece en listados públicos)
-          // - privacy_setting !== "locked" (no está bloqueado)
-          // - shareable !== false (se puede compartir)
-          
-          const isPublic = event.listed === true && 
-                          event.privacy_setting !== 'locked' && 
-                          event.shareable !== false;
-          
-          if (!isPublic) {
-            console.log(`🔒 Evento privado excluido: ${event.name?.text || event.id} (listed: ${event.listed}, privacy: ${event.privacy_setting}, shareable: ${event.shareable})`);
+          if (event.listed === false) {
+            console.log(`🔒 Evento no listado excluido: ${event.name?.text || event.id}`);
+            return false;
           }
-          
-          return isPublic;
-        });
-    
-        console.log(`✅ Eventos encontrados: ${filteredEvents.length} públicos de ${eventsByMonth.length} del mes (${allEvents.length} totales)`);
+          return true;
+      });
+
+console.log(`✅ Eventos encontrados: ${filteredEvents.length} listados de ${eventsByMonth.length} del mes (${allEvents.length} totales)`);
+
         
         // ⭐ Obtener información de tickets para cada evento
         console.log(`🎫 Obteniendo información de tickets para ${filteredEvents.length} eventos...`);
