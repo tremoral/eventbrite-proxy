@@ -333,8 +333,13 @@ app.get('/api/events', async (req, res) => {
     // Filtrar eventos por mes y año localmente
     const allEvents = response.data.events || [];
     const eventsByMonth = allEvents.filter(event => {
-      if (!event.start || !event.start.utc) return false;
-      const eventDate = new Date(event.start.utc);
+      if (!event.start) return false;
+      
+      // Usar la fecha local del evento si está disponible, si no usar UTC
+      const dateString = event.start.local || event.start.utc;
+      if (!dateString) return false;
+      
+      const eventDate = new Date(dateString);
       return eventDate.getFullYear() === yearNum && 
              eventDate.getMonth() === monthNum - 1;
     });
