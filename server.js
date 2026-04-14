@@ -259,26 +259,8 @@ async function getEventTicketInfo(eventId, headers) {
 
 app.get('/api/events', async (req, res) => {
   try {
-    const { month, year } = req.query;
-
-    if (!month || !year) {
-      return res.status(400).json({ error: 'Faltan parámetros month y year' });
-    }
-
-    // Validar y parsear parámetros
-    const monthNum = parseInt(month, 10);
-    const yearNum = parseInt(year, 10);
-
-    if (isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
-      return res.status(400).json({ error: 'El mes debe ser un número entre 1 y 12' });
-    }
-
-    if (isNaN(yearNum) || yearNum < 2000 || yearNum > 2100) {
-      return res.status(400).json({ error: 'El año debe ser un número válido' });
-    }
-
-    // ⭐ Crear clave de caché única por mes/año
-    const cacheKey = `events_${yearNum}_${monthNum}`;
+    // ⭐ Crear clave de caché única para todos los eventos futuros
+    const cacheKey = `events_upcoming`;
     
     // ⭐ Verificar si existe en caché y no ha expirado
     const cached = cache.get(cacheKey);
@@ -292,15 +274,7 @@ app.get('/api/events', async (req, res) => {
       return res.json(cached.data);
     }
 
-    // Formatear fechas con padding de ceros
-    const monthPadded = monthNum.toString().padStart(2, '0');
-    const startDate = `${yearNum}-${monthPadded}-01T00:00:00Z`;
-    
-    const lastDay = new Date(yearNum, monthNum, 0).getDate();
-    const lastDayPadded = lastDay.toString().padStart(2, '0');
-    const endDate = `${yearNum}-${monthPadded}-${lastDayPadded}T23:59:59Z`;
-
-    console.log(`📅 Consultando API Eventbrite: ${startDate} a ${endDate}`);
+    console.log(`📅 Consultando API Eventbrite: todos los eventos futuros`);
     
     // Verificar que el token existe
     if (!process.env.EVENTBRITE_TOKEN) {
@@ -330,22 +304,11 @@ app.get('/api/events', async (req, res) => {
       1000  // 1 segundo de delay inicial
     );
 
-    // Filtrar eventos por mes y año localmente
+    // Obtener todos los eventos futuros
     const allEvents = response.data.events || [];
-    const eventsByMonth = allEvents.filter(event => {
-      if (!event.start) return false;
-      
-      // Usar la fecha local del evento si está disponible, si no usar UTC
-      const dateString = event.start.local || event.start.utc;
-      if (!dateString) return false;
-      
-      const eventDate = new Date(dateString);
-      return eventDate.getFullYear() === yearNum && 
-             eventDate.getMonth() === monthNum - 1;
-    });
 
     // ⭐ Filtrar solo eventos listados (excluir listed: false)
-    const filteredEvents = eventsByMonth.filter(event => {
+    const filteredEvents = allEvents.filter(event => {
       const isListed = event.listed === true;
       if (!isListed) {
         console.log(`🔒 Evento no listado excluido: ${event.name?.text || event.id} (listed: ${event.listed})`);
@@ -353,7 +316,7 @@ app.get('/api/events', async (req, res) => {
       return isListed;
     });
 
-    console.log(`✅ Eventos encontrados: ${filteredEvents.length} listados de ${eventsByMonth.length} del mes (${allEvents.length} totales)`);
+    console.log(`✅ Eventos encontrados: ${filteredEvents.length} listados de ${allEvents.length} totales`);
     
     // ⭐ Obtener información de tickets para cada evento
     console.log(`🎫 Obteniendo información de tickets para ${filteredEvents.length} eventos...`);
