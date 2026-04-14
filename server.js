@@ -304,11 +304,23 @@ app.get('/api/events', async (req, res) => {
       1000  // 1 segundo de delay inicial
     );
 
-    // Obtener todos los eventos futuros
+    // Obtener todos los eventos
     const allEvents = response.data.events || [];
 
+    // ⭐ Filtrar solo eventos futuros (que aún no hayan pasado)
+    const now = new Date();
+    const futureEvents = allEvents.filter(event => {
+      if (!event.start) return false;
+      const eventEnd = new Date(event.end?.local || event.end?.utc || event.start.local || event.start.utc);
+      const isPast = eventEnd < now;
+      if (isPast) {
+        console.log(`⏭️  Evento pasado excluido: ${event.name?.text || event.id} (fin: ${eventEnd.toISOString()})`);
+      }
+      return !isPast;
+    });
+
     // ⭐ Filtrar solo eventos listados (excluir listed: false)
-    const filteredEvents = allEvents.filter(event => {
+    const filteredEvents = futureEvents.filter(event => {
       const isListed = event.listed === true;
       if (!isListed) {
         console.log(`🔒 Evento no listado excluido: ${event.name?.text || event.id} (listed: ${event.listed})`);
@@ -316,7 +328,7 @@ app.get('/api/events', async (req, res) => {
       return isListed;
     });
 
-    console.log(`✅ Eventos encontrados: ${filteredEvents.length} listados de ${allEvents.length} totales`);
+    console.log(`✅ Eventos encontrados: ${filteredEvents.length} listados de ${futureEvents.length} futuros (${allEvents.length} totales)`);
     
     // ⭐ Obtener información de tickets para cada evento
     console.log(`🎫 Obteniendo información de tickets para ${filteredEvents.length} eventos...`);
