@@ -48,7 +48,8 @@ app.get('/', (req, res) => {
       entries: cache.size,
       keys: Array.from(cache.keys()),
       ttl_seconds: CACHE_TTL / 1000
-    }
+    },
+    updated_at: 'May 19 2026'
   });
 });
 
